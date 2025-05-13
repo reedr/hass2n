@@ -38,6 +38,7 @@ class Hass2NPortSensor(BinarySensorEntity,Hass2NEntity):
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
 #       _LOGGER.error(f"{self.coordinator.data} {self._entity}")
-        port = next(p for p in self.coordinator.data["ports"] if p["port"] == self._entity)
-        self._state = port["state"]
-        self.async_write_ha_state()
+        if self.coordinator.data is not None:
+            port = next(p for p in self.coordinator.data["ports"] if p["port"] == self._entity)
+            self._state = port["state"]
+            self.async_write_ha_state()

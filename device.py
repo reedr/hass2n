@@ -1,5 +1,6 @@
 """2N Device."""
 
+from json.decoder import JSONDecodeError
 import logging
 
 import httpx
@@ -15,7 +16,11 @@ class Hass2NDeviceResponse:
     def __init__(self, resp: httpx.Response) -> None:
         """Set it up."""
         self._status_code = resp.status_code
-        self._json = resp.json()
+        try:
+            self._json = resp.json()
+        except JSONDecodeError:
+            self._status_code = httpx.codes.INTERNAL_SERVER_ERROR
+
 
     @property
     def status_code(self) -> int:
@@ -46,6 +51,7 @@ class Hass2NDevice:  # noqa: D101
         self._online = False
         self._callbacks = set()
         self._system_info: dict | None
+        self._log_id = 0
 
     @property
     def device_id(self) -> str:
@@ -70,8 +76,13 @@ class Hass2NDevice:  # noqa: D101
     async def api_get(self, uri: str) -> Hass2NDeviceResponse:
         """Make an API call."""
         url = "https://" + self._host + uri
-        resp = await self._client.get(url)
-        _LOGGER.error(f"{url} -> {resp.status_code}")  # noqa: G004
+        resp = httpx.Response(status_code=0)
+        try:
+            resp = await self._client.get(url)
+
+        except httpx.RemoteProtocolError as exc:
+            _LOGGER.error("Error during get: %s", exc)
+
         devresp = Hass2NDeviceResponse(resp)
         self._online = (devresp.status_code == httpx.codes.OK)
         return devresp
@@ -104,6 +115,15 @@ class Hass2NDevice:  # noqa: D101
         if resp.status_code != httpx.codes.OK:
             return None
         status["switches"] = resp.json["result"]["switches"]
+
+        if self._log_id == 0:
+            resp = await self.api_get("/api/log/subscribe")
+            if resp.status_code == httpx.codes.OK:
+                self._log_id = resp.json["result"]["id"]
+        if self._log_id != 0:
+            resp = await self.api_get(f"/api/log/pull?id={self._log_id}")
+            if resp.status_code == httpx.codes.OK:
+                status["events"] = resp.json["result"]["events"]
         return status
 
     def register_callback(self, callback) -> None:

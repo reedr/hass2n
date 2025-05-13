@@ -50,6 +50,7 @@ class Hass2NSwitch(SwitchEntity, Hass2NEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        switch = next(sw for sw in self.coordinator.data["switches"] if sw["switch"] == self._entity)
-        self._state = switch["active"]
-        self.async_write_ha_state()
+        if self.coordinator.device is not None:
+            switch = next(sw for sw in self.coordinator.data["switches"] if sw["switch"] == self._entity)
+            self._state = switch["active"]
+            self.async_write_ha_state()
