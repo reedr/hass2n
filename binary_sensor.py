@@ -20,6 +20,7 @@ async def async_setup_entry(hass: HomeAssistant,
     new_entities = [Hass2NPortSensor(coord, port["port"], port["state"]) for port in ports]
     if new_entities:
         async_add_entities(new_entities)
+    async_add_entities([Hass2NEventSensor(coord, "tracking", False)])
 
 class Hass2NPortSensor(BinarySensorEntity,Hass2NEntity):
     """Port state sensor."""
@@ -34,6 +35,11 @@ class Hass2NPortSensor(BinarySensorEntity,Hass2NEntity):
         """Type of entity."""
         return "port"
 
+    @property
+    def available(self) -> bool:
+        """"Return online state."""
+        return self.coordinator.device.ports_online
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
@@ -42,3 +48,27 @@ class Hass2NPortSensor(BinarySensorEntity,Hass2NEntity):
             port = next(p for p in self.coordinator.data["ports"] if p["port"] == self._entity)
             self._state = port["state"]
             self.async_write_ha_state()
+
+class Hass2NEventSensor(BinarySensorEntity,Hass2NEntity):
+    """Port state sensor."""
+
+    @property
+    def is_on(self):
+        """Return state."""
+        self._state = self.coordinator.device.events_online
+        return self._state
+
+    @property
+    def entity_type(self) -> str:
+        """Type of entity."""
+        return "event"
+
+    @property
+    def available(self) -> bool:
+        """"Return online state."""
+        return self.coordinator.device.online
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self.async_write_ha_state()

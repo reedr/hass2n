@@ -2,6 +2,7 @@
 
 from json.decoder import JSONDecodeError
 import logging
+import re
 
 import httpx
 
@@ -16,26 +17,24 @@ class Hass2NDeviceResponse:
 
     def __init__(self, resp: httpx.Response) -> None:
         """Set it up."""
-        try:
-            self._json = resp.json()
-            self._result = self._json.get("result")
-            if self._result is None:
-                self._status_code = httpx.codes.INTERNAL_SERVER_ERROR
-            else:
-                self._status_code = resp.status_code
+        _LOGGER.debug("<- %d %s: %s", resp.status_code, resp.reason_phrase, re.sub("\s+", " ", resp.text))
+        self._status_code = resp.status_code
+        if self._status_code == httpx.codes.OK:
+            try:
+                json = resp.json()
+                if json.get("success"):
+                    self._result = json.get("result")
+                    return
+            except JSONDecodeError:
+                _LOGGER.error("JSON decode error")
 
-        except JSONDecodeError:
             self._status_code = httpx.codes.INTERNAL_SERVER_ERROR
+        self._result = None
 
     @property
     def status_code(self) -> int:
         """Return the last status."""
         return self._status_code
-
-    @property
-    def json(self) -> dict:
-        """Return the json response."""
-        return self._json
 
     @property
     def result(self) -> dict | None:
@@ -68,14 +67,19 @@ class Hass2NDevice:  # noqa: D101
         self._username = username
         self._password = password
         self._auth = httpx.DigestAuth(username=username, password=password)
-        self._client = httpx.AsyncClient(base_url="https://"+self._host,auth=self._auth, verify=False)
+        self._client = httpx.AsyncClient(base_url="https://"+self._host,
+                                         auth=self._auth,
+                                         verify=False)
         self._device_name = None
         self._mac_addr = None
         self._device_id = None
-        self._online = False
         self._callbacks = set()
         self._system_info: dict | None
         self._log_id = None
+        self._response = None
+        self._switches_online = False
+        self._ports_online = False
+        self._events_online = False
 
     @property
     def device_id(self) -> str:
@@ -88,59 +92,90 @@ class Hass2NDevice:  # noqa: D101
         return self._system_info
 
     @property
-    def online(self) -> bool:
-        """Return status."""
-        return self._online
+    def ports_online(self) -> bool:
+        """Return online."""
+        return self._ports_online
 
-    async def api_get(self, uri: str) -> Hass2NDeviceResponse:
+    @property
+    def switches_online(self) -> bool:
+        """Return online."""
+        return self._switches_online
+
+    @property
+    def events_online(self) -> bool:
+        """Return online."""
+        return self._events_online
+
+    @property
+    def online(self) -> bool:
+        """Return any online."""
+        return self._events_online or self._ports_online or self._switches_online
+
+    async def api_call(self, uri: str) -> bool:
         """Make an API call."""
         tries = 2
         while tries > 0:
             try:
                 _LOGGER.debug("-> GET %s", uri)
                 resp = await self._client.get(uri)
-                _LOGGER.debug("<- Response: code=%d json=%s", resp.status_code, resp.json())
-                return Hass2NDeviceResponse(resp)
+                self._response = Hass2NDeviceResponse(resp)
+                return self._response.status_code == httpx.codes.OK
 
             except httpx.RemoteProtocolError as exc:
                 _LOGGER.error("GET error (%s): %s", self.device_id, exc)
             tries -= 1
 
-        return Hass2NDeviceResponse(httpx.Response(status_code=httpx.codes.INTERNAL_SERVER_ERROR))
+        return False
 
-    async def api_call(self, uri: str) -> bool:
-        """Make a call and return True if successful."""
-        resp = await self.api_get(uri)
-        return resp.status_code == httpx.codes.OK
+    async def api_get(self, uri: str) -> bool:
+        return await self.api_call(uri) and self._response.has_result
 
-    async def get_system_info(self) -> int:
+    async def get_system_info(self) -> bool:
         """Load initial system info."""
-        resp = await self.api_get("/api/system/info")
-        if resp.has_result:
-            self._system_info = resp.result
-            self._device_name = resp.result_value("deviceName")
-            self._mac_addr = resp.result_value("macAddr")
-            self._device_id = "2N:" + self._mac_addr
-        return resp.status_code
+        if not await self.api_get("/api/system/info"):
+            return False
+
+        self._system_info = self._response.result
+        self._device_name = self._response.result_value("deviceName")
+        self._mac_addr = self._response.result_value("macAddr")
+        self._device_id = "2N:" + self._mac_addr
+        return True
 
     async def get_status(self) -> dict | None:
         """Load the current status."""
         status = {}
-        resp = await self.api_get("/api/io/status")
-        if resp.has_result:
-            status["ports"] = resp.result_value("ports")
+        self._ports_online = await self.api_get("/api/io/status")
+        if self._ports_online:
+            status["ports"] = self._response.result_value("ports")
 
-        resp = await self.api_get("/api/switch/status")
-        if resp.has_result:
-            status["switches"] = resp.result_value("switches")
+        self._switches_online = await self.api_get("/api/switch/status")
+        if self._switches_online:
+            status["switches"] = self._response.result_value("switches")
 
-        if self._log_id is None:
-            resp = await self.api_get("/api/log/subscribe")
-            self._log_id = resp.result_value("id")
-        if self._log_id is not None:
-            resp = await self.api_get(f"/api/log/pull?id={self._log_id}")
-            status["events"] = resp.result_value("events")
+        if self._log_id is None and await self.api_get("/api/log/subscribe"):
+            self._log_id = self._response.result_value("id")
+
+        self._events_online = (self._log_id is not None
+                               and await self.api_get(f"/api/log/pull?id={self._log_id}"))
+        if self._events_online:
+            status["events"] = self._response.result_value("events")
+        else:
+            self._log_id = None
+
         return status
+
+    async def async_turn_on (self, key: str) -> bool:
+        """Turn sw on."""
+        return await self.api_call(f"/api/switch/ctrl?switch={key}&action=on")
+
+    async def async_turn_off (self, key: str) -> bool:
+        """Turn sw off."""
+        return await self.api_call(f"/api/switch/ctrl?switch={key}&action=off")
+
+    async def async_press (self, key: str) -> bool:
+        """Momentary sw."""
+        return await self.api_call(f"/api/switch/ctrl?switch={key}&action=trigger")
+
 
     def register_callback(self, callback) -> None:
         """Register callback, called when device changes state."""

@@ -57,11 +57,6 @@ class Hass2NEntity(CoordinatorEntity[Hass2NCoordinator]):
         return self._attr_device_info
 
     @property
-    def available(self) -> bool:
-        """"Return online state."""
-        return self.coordinator.device.online
-
-    @property
     def device(self) -> Hass2NDevice:
         """Return device."""
         return self.coordinator.device

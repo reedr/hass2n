@@ -37,7 +37,7 @@ class Hass2NButton(ButtonEntity, Hass2NEntity):
 
     async def async_press(self, **kwargs: Any) -> None:
         """Turn the entity on."""
-        await self.api_get(f"/api/switch/ctrl?switch={self._entity}&action=trigger")
+        await self.coordinator.device.async_press(self._entity)
 
     @callback
     def _handle_coordinator_update(self) -> None:
