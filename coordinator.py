@@ -12,7 +12,7 @@ from .device import Hass2NDevice
 
 _LOGGER = logging.getLogger(__name__)
 
-type Hass2NConfigEntry = ConfigEntry[Hass2NCoordinator]
+type Hass2NConfigEntry = ConfigEntry['Hass2NCoordinator']
 
 class Hass2NCoordinator(DataUpdateCoordinator):
     """My custom coordinator."""
@@ -57,9 +57,10 @@ class Hass2NCoordinator(DataUpdateCoordinator):
         if status is None:
             raise UpdateFailed
 
-        events = status["events"]
-        for event in events:
-            event["device_id"] = self.device.device_id
-#            _LOGGER.error(event)
-            self.hass.bus.async_fire(EVENT, event)
+        events = status.get("events")
+        if events is not None:
+            for event in events:
+                event["device_id"] = self.device.device_id
+                _LOGGER.debug("Fire event: %s", event)
+                self.hass.bus.async_fire(EVENT, event)
         return status
