@@ -9,19 +9,23 @@ from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
+MAX_KEEPALIVE_TIME = 30.0
 
 class Hass2NDeviceResponse:
     """API return status."""
 
     def __init__(self, resp: httpx.Response) -> None:
         """Set it up."""
-        self._status_code = resp.status_code
         try:
             self._json = resp.json()
             self._result = self._json.get("result")
+            if self._result is None:
+                self._status_code = httpx.codes.INTERNAL_SERVER_ERROR
+            else:
+                self._status_code = resp.status_code
+
         except JSONDecodeError:
             self._status_code = httpx.codes.INTERNAL_SERVER_ERROR
-
 
     @property
     def status_code(self) -> int:
@@ -64,7 +68,7 @@ class Hass2NDevice:  # noqa: D101
         self._username = username
         self._password = password
         self._auth = httpx.DigestAuth(username=username, password=password)
-        self._client = httpx.AsyncClient(auth=self._auth, verify=False)
+        self._client = httpx.AsyncClient(base_url="https://"+self._host,auth=self._auth, verify=False)
         self._device_name = None
         self._mac_addr = None
         self._device_id = None
@@ -90,19 +94,19 @@ class Hass2NDevice:  # noqa: D101
 
     async def api_get(self, uri: str) -> Hass2NDeviceResponse:
         """Make an API call."""
-        url = "https://" + self._host + uri
-        resp = httpx.Response(status_code=0)
-        try:
-            _LOGGER.debug("-> GET %s", url)
-            resp = await self._client.get(url)
+        tries = 2
+        while tries > 0:
+            try:
+                _LOGGER.debug("-> GET %s", uri)
+                resp = await self._client.get(uri)
+                _LOGGER.debug("<- Response: code=%d json=%s", resp.status_code, resp.json())
+                return Hass2NDeviceResponse(resp)
 
-        except httpx.RemoteProtocolError as exc:
-            _LOGGER.error("Error during get: %s", exc)
+            except httpx.RemoteProtocolError as exc:
+                _LOGGER.error("GET error (%s): %s", self.device_id, exc)
+            tries -= 1
 
-        _LOGGER.debug("<- Response: code=%d json=%s", resp.status_code, resp.json())
-        devresp = Hass2NDeviceResponse(resp)
-        self._online = devresp.status_code == httpx.codes.OK
-        return devresp
+        return Hass2NDeviceResponse(httpx.Response(status_code=httpx.codes.INTERNAL_SERVER_ERROR))
 
     async def api_call(self, uri: str) -> bool:
         """Make a call and return True if successful."""
